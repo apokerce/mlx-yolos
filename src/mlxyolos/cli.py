@@ -30,29 +30,28 @@ def _cmd_convert(args: argparse.Namespace) -> int:
 def _cmd_predict(args: argparse.Namespace) -> int:
     # Lazy: import MLX-dependent code only when actually running inference.
     from mlxyolos import YOLO
-    from mlxyolos.utils.plotting import draw_pose
 
     model = YOLO(args.cfg, scale=args.scale, weights=args.weights, verbose=args.verbose)
+    print(f"loaded {model.task!r} head, nc={model.nc}, names={model.names}")
+    print(
+        f"running on {args.source!r}: imgsz={args.imgsz}, "
+        f"conf={args.conf}, iou={args.iou}, kpt_thr={args.kpt_thr}"
+    )
     results = model.predict(args.source, imgsz=args.imgsz, conf=args.conf, iou=args.iou)
 
-    for r in results:
-        n = 0 if r.boxes is None else len(r.boxes)
-        print(f"{r.path or '<array>'}: {n} detections")
-
-    if args.save and results:
-        out_dir = Path(args.save)
+    out_dir: Path | None = Path(args.save) if args.save else None
+    if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
-        for i, r in enumerate(results):
+
+    for i, r in enumerate(results):
+        # Elaborate per-detection log: file, class label, conf, box, kpt count.
+        print(r.verbose(kpt_thr=args.kpt_thr))
+
+        if out_dir is not None:
             stem = Path(r.path).stem if r.path else f"img{i}"
             out_path = out_dir / f"{stem}.jpg"
-            if model.task == "pose" and r.boxes is not None and r.keypoints is not None and r.keypoints.data is not None:
-                im = draw_pose(r.orig_img, r.boxes.xyxy, r.boxes.conf, r.keypoints.data)
-            else:
-                from PIL import Image as _PIL
-
-                im = _PIL.fromarray(r.orig_img)
-            im.save(out_path)
-            print(f"  -> {out_path}")
+            r.plot(kpt_thr=args.kpt_thr).save(out_path)
+            print(f"  → saved {out_path}")
     return 0
 
 
@@ -74,6 +73,13 @@ def main(argv: list[str] | None = None) -> int:
     pp.add_argument("--imgsz", type=int, default=640)
     pp.add_argument("--conf", type=float, default=0.25)
     pp.add_argument("--iou", type=float, default=0.45)
+    pp.add_argument(
+        "--kpt-thr",
+        type=float,
+        default=0.5,
+        dest="kpt_thr",
+        help="Visibility threshold below which keypoints are skipped (pose only)",
+    )
     pp.add_argument("--save", default=None, help="Directory to save annotated images")
     pp.add_argument("--verbose", action="store_true")
     pp.set_defaults(func=_cmd_predict)

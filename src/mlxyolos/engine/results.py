@@ -98,6 +98,67 @@ class Results:
     def orig_shape(self) -> tuple[int, int]:
         return self.orig_img.shape[:2]  # type: ignore[no-any-return]
 
+    # ------------------------------------------------------------------
+    # Inspection helpers
+    # ------------------------------------------------------------------
+
+    def summary(self, kpt_thr: float = 0.5) -> list[dict[str, Any]]:
+        """Per-detection structured summary, one dict per box.
+
+        Always includes ``index, name, class, conf, box_xyxy, box_xywh``.
+        For pose results it adds ``keypoints_visible`` (e.g. ``"15/17"``)
+        and the keypoint array under ``keypoints``.
+        """
+        out: list[dict[str, Any]] = []
+        if self.boxes is None or len(self.boxes) == 0:
+            return out
+        xyxy = self.boxes.xyxy
+        xywh = self.boxes.xywh
+        conf = self.boxes.conf
+        cls = self.boxes.cls
+        kpts = self.keypoints.data if self.keypoints is not None else None
+        for i in range(len(self.boxes)):
+            ci = int(cls[i])
+            entry: dict[str, Any] = {
+                "index": i,
+                "class": ci,
+                "name": self.names.get(ci, str(ci)),
+                "conf": float(conf[i]),
+                "box_xyxy": [float(v) for v in xyxy[i].tolist()],
+                "box_xywh": [float(v) for v in xywh[i].tolist()],
+            }
+            if kpts is not None and i < len(kpts):
+                kp = kpts[i]
+                if kp.shape[-1] >= 3:
+                    visible = int((kp[:, 2] > kpt_thr).sum())
+                    entry["keypoints_visible"] = f"{visible}/{kp.shape[0]}"
+                entry["keypoints"] = kp.tolist()
+            out.append(entry)
+        return out
+
+    def verbose(self, *, kpt_thr: float = 0.5, max_rows: int | None = None) -> str:
+        """Multi-line summary suitable for stdout / logs."""
+        h, w = self.orig_shape
+        n = 0 if self.boxes is None else len(self.boxes)
+        head = f"{self.path or '<array>'}  {w}x{h}  {n} detection{'s' if n != 1 else ''}"
+        rows: list[str] = [head]
+        items = self.summary(kpt_thr=kpt_thr)
+        if max_rows is not None:
+            items = items[:max_rows]
+        for d in items:
+            x1, y1, x2, y2 = d["box_xyxy"]
+            line = (
+                f"  [{d['index']}] {d['name']:<10} {d['conf']:.3f}  "
+                f"box=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})"
+            )
+            if "keypoints_visible" in d:
+                line += f"  kpts={d['keypoints_visible']}"
+            rows.append(line)
+        return "\n".join(rows)
+
+    def __str__(self) -> str:
+        return self.verbose()
+
     def __repr__(self) -> str:
         parts: list[str] = []
         if self.boxes is not None:
@@ -105,3 +166,40 @@ class Results:
         if self.keypoints is not None:
             parts.append(f"keypoints={len(self.keypoints)}")
         return f"Results({', '.join(parts) or 'empty'}, orig_shape={self.orig_shape}, path={self.path!r})"
+
+    # ------------------------------------------------------------------
+    # Plot — annotate the original image with whatever data is available
+    # ------------------------------------------------------------------
+
+    def plot(self, *, kpt_thr: float = 0.5):
+        """Return a PIL ``Image`` with boxes / labels / skeleton annotated.
+
+        Always draws boxes if any are present. Adds the COCO skeleton when
+        keypoints are available (pose task). Class label + confidence go in
+        the corner of every box, on a filled background for legibility.
+        """
+        # Local import keeps Pillow optional for users who only need raw arrays.
+        from mlxyolos.utils.plotting import draw_boxes, draw_pose
+
+        if (
+            self.keypoints is not None
+            and self.keypoints.data is not None
+            and self.boxes is not None
+            and len(self.boxes) > 0
+        ):
+            return draw_pose(
+                self.orig_img,
+                self.boxes.xyxy,
+                self.boxes.conf,
+                self.boxes.cls,
+                self.keypoints.data,
+                names=self.names,
+                kpt_thr=kpt_thr,
+            )
+        return draw_boxes(
+            self.orig_img,
+            self.boxes.xyxy if self.boxes is not None else None,
+            self.boxes.conf if self.boxes is not None else None,
+            self.boxes.cls if self.boxes is not None else None,
+            names=self.names,
+        )

@@ -9,12 +9,13 @@ and YAML elsewhere.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
 from PIL import Image
+
+if TYPE_CHECKING:  # pragma: no cover — type hints only
+    import mlx.nn as nn
 
 from mlxyolos.engine.results import Boxes, Keypoints, Results
 from mlxyolos.utils.ops import letterbox, nms, scale_coords, scale_keypoints, xywh_to_xyxy
@@ -116,7 +117,7 @@ class Predictor:
 
     def __init__(
         self,
-        model: nn.Module,
+        model: "nn.Module",
         task: str,
         nc: int,
         names: dict[int, str] | None = None,
@@ -166,6 +167,11 @@ class Predictor:
         conf: float,
         iou: float,
     ) -> Results:
+        # Import MLX lazily so the pure-numpy post-processors stay usable
+        # (e.g. for tests, or when post-processing tensors fed in by a host
+        # that already ran the model elsewhere).
+        import mlx.core as mx
+
         orig, path = self._load_image(src)
         lb_img, ratio, pad = letterbox(orig, imgsz)
 

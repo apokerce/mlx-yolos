@@ -2,7 +2,7 @@
 """mlx-yolos utility helpers."""
 
 from .ops import letterbox, nms, scale_coords, scale_keypoints, xywh_to_xyxy
-from .plotting import COCO_SKELETON, draw_pose
+from .plotting import COCO_SKELETON, draw_boxes, draw_pose
 
 __all__ = [
     "letterbox",
@@ -11,5 +11,6 @@ __all__ = [
     "scale_keypoints",
     "xywh_to_xyxy",
     "COCO_SKELETON",
+    "draw_boxes",
     "draw_pose",
 ]

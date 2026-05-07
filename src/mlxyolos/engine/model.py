@@ -23,11 +23,12 @@ logger = logging.getLogger(__name__)
 
 
 # Map a head class to the predictor's task name. Adding a new head =
-# one entry here and one entry in ``predictor.POSTPROCESSORS``.
-_HEAD_TO_TASK: dict[type, str] = {
-    DetectV8: "detect",
-    PoseV8: "pose",
-}
+# one tuple here and one entry in ``predictor.POSTPROCESSORS``.
+#
+_HEAD_TASKS: tuple[tuple[type, str], ...] = (
+    (PoseV8, "pose"),
+    (DetectV8, "detect"),
+)
 
 
 class YOLO:
@@ -60,20 +61,36 @@ class YOLO:
         if self.task == "pose":
             ks = self.cfg_dict.get("kpt_shape", [17, 3])
             self.kpt_shape = (int(ks[0]), int(ks[1]))
-        self.names: dict[int, str] = {i: str(i) for i in range(self.nc)}
+        self.names: dict[int, str] = self._default_names()
         if weights is not None:
             self.load(weights)
 
     # ----- model lifecycle ---------------------------------------------------
 
+    def _default_names(self) -> dict[int, str]:
+        """Pick a sensible default name map per task / class count.
+
+        You can always override by assigning to ``model.names`` after
+        construction. The default just makes single-class pose models say
+        ``person`` instead of ``0``.
+        """
+        cfg_names = self.cfg_dict.get("names")
+        if isinstance(cfg_names, dict):
+            return {int(k): str(v) for k, v in cfg_names.items()}
+        if isinstance(cfg_names, list):
+            return {i: str(n) for i, n in enumerate(cfg_names)}
+        if self.task == "pose" and self.nc == 1:
+            return {0: "person"}
+        return {i: str(i) for i in range(self.nc)}
+
     def _infer_task(self) -> str:
         head = self.model.model[-1]
-        for cls, task in _HEAD_TO_TASK.items():
+        for cls, task in _HEAD_TASKS:
             if isinstance(head, cls):
                 return task
         raise ValueError(
             f"Could not infer task from head {type(head).__name__!r}; "
-            f"register it in mlxyolos.engine.model._HEAD_TO_TASK"
+            f"register it in mlxyolos.engine.model._HEAD_TASKS"
         )
 
     def load(self, weights: str | Path) -> None:
