@@ -13,8 +13,9 @@ plus a head class and YAML elsewhere.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from PIL import Image
@@ -204,7 +205,7 @@ class Predictor:
 
     def __init__(
         self,
-        model: "nn.Module",
+        model: nn.Module,
         task: str,
         nc: int,
         names: dict[int, str] | None = None,

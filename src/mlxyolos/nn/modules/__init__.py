@@ -1,7 +1,7 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 """Neural-network building blocks (NHWC) for mlx-yolos."""
 
-from .block import Bottleneck, C2f, SPPF
+from .block import SPPF, Bottleneck, C2f
 from .conv import Concat, Conv, DWConv, autopad
 from .head import DetectV8, PoseV8
 

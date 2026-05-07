@@ -18,8 +18,9 @@ import contextlib
 import logging
 import math
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn

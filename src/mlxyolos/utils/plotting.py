@@ -13,7 +13,7 @@ fall back to PIL's bitmap default if no system fonts are findable.
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping
+from collections.abc import Iterable, Mapping
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -131,7 +131,7 @@ def draw_pose(
     names = names or {}
     skel = tuple(skeleton)
 
-    for i, (box, score, c, kp) in enumerate(zip(boxes_xyxy, scores, cls, kpts, strict=True)):
+    for box, score, c, kp in zip(boxes_xyxy, scores, cls, kpts, strict=True):
         x1, y1, x2, y2 = (float(v) for v in box.tolist())
         color = _color_for_class(int(c))
         draw.rectangle([x1, y1, x2, y2], outline=color, width=2)

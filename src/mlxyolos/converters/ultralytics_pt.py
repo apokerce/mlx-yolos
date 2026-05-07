@@ -24,9 +24,7 @@ is installable there. The ``.safetensors`` it writes is loaded later by
 from __future__ import annotations
 
 import logging
-import os
 import re
-import sys
 from pathlib import Path
 from typing import Any
 

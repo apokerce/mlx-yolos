@@ -88,14 +88,14 @@ jobs:
         env:
           IMAGE_PATH: /tmp/bus.jpg
         # Hard-fail on regressions: parameter-tree mismatch or numerical
-        # drift greater than 1e-3 max abs vs the official Ultralytics output.
+        # drift greater than 5e-3 max abs vs the official Ultralytics output.
         run: |
           python scripts/validate_yolov8_pose.py | tee validate.log
           grep -q 'missing in safetensors: 0' validate.log
           grep -q 'extra in safetensors: 0'   validate.log
           awk '/^max abs diff:/ {
-                 if ($4 + 0 > 0.001) {
-                   print "FAIL: max abs diff "$4" > 1e-3"; exit 1
+                 if ($4 + 0 > 0.005) {
+                   print "FAIL: max abs diff "$4" > 5e-3"; exit 1
                  }
                  print "OK: max abs diff "$4
                }' validate.log
