@@ -90,13 +90,36 @@ for r in results:
     print(r.keypoints.data.shape)  # (N, 17, 3)  -> (x, y, visibility)
 ```
 
-To draw the skeleton:
+For a richer per-detection log:
 
 ```python
-from mlxyolos.utils import draw_pose
+print(results[0].verbose())
+# /path/to/bus.jpg  810x1080  3 detections
+#   [0] person     0.883  box=(48.5, 396.4, 244.2, 905.5)  kpts=16/17
+#   [1] person     0.875  box=(222.1, 407.0, 345.4, 858.0)  kpts=17/17
+#   [2] person     0.868  box=(668.7, 397.7, 809.0, 876.4)  kpts=8/17
+```
+
+To draw boxes + class badges + skeleton:
+
+```python
+results[0].plot().save("annotated.jpg")
+```
+
+`Results.plot()` automatically picks the right drawing path: boxes + class
+badges always, plus the COCO skeleton when keypoints are available. If you
+need the lower-level helpers directly:
+
+```python
+from mlxyolos.utils import draw_boxes, draw_pose
 
 r = results[0]
-img = draw_pose(r.orig_img, r.boxes.xyxy, r.boxes.conf, r.keypoints.data)
+img = draw_pose(
+    r.orig_img,
+    r.boxes.xyxy, r.boxes.conf, r.boxes.cls,
+    r.keypoints.data,
+    names={0: "person"},
+)
 img.save("annotated.jpg")
 ```
 
@@ -127,8 +150,9 @@ mlx-yolos/
 │   │       ├── block.py     # Bottleneck / C2f / SPPF
 │   │       └── head.py      # DetectV8 / PoseV8
 │   └── utils/
-│       ├── ops.py           # letterbox / NMS / scale_coords
-│       └── plotting.py      # draw_pose
+│       ├── ops.py           # numpy: letterbox / NMS / scale_coords
+│       ├── ops_mlx.py       # MLX-native: xywh_to_xyxy / scale_* / NMS-with-on-device-IoU
+│       └── plotting.py      # draw_boxes / draw_pose
 ├── scripts/
 │   └── validate_yolov8_pose.py  # numerical parity check vs Ultralytics
 └── tests/
@@ -158,6 +182,67 @@ The converter does **not** need to know about new families — module containers
 ```bash
 python scripts/validate_yolov8_pose.py
 ```
+
+---
+
+## Where MLX runs (and where it doesn't)
+
+The hot path stays on the Apple-Silicon GPU end to end:
+
+| Stage                              | Backend     | Notes                                                                                       |
+| ---------------------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| Image read                         | PIL         | File I/O is CPU-bound; MLX has no image decoder.                                            |
+| Letterbox resize                   | PIL         | One small bilinear resize on uint8; not worth a Metal kernel.                               |
+| Normalize (`/255` + NHWC float32)  | **MLX**     | Done on device after upload — the host only ships the uint8 buffer.                        |
+| Forward pass                       | **MLX**     | Lazy graph; no eval forced yet.                                                             |
+| Per-anchor decode (`max` / `argmax` over class scores, `xywh→xyxy` over ~8400 anchors) | **MLX** | Fused into the same eval as the forward pass. |
+| Confidence filter                  | NumPy       | Variable-shape gather is awkward in MLX; runs on the small post-eval array.                |
+| NMS — pairwise IoU matrix          | **MLX**     | Computed on device for the (typically <few hundred) post-conf detections.                   |
+| NMS — greedy keep loop             | NumPy       | Inherently serial; runs on the (already small) IoU matrix.                                  |
+| Scale boxes / keypoints back to original image | NumPy | Operates on the post-NMS set (~tens of detections); MLX overhead would dominate. |
+| Drawing                            | Pillow      | CPU-only by definition.                                                                     |
+
+The post-processors auto-dispatch by input type: `mx.array` triggers the
+on-device path, `np.ndarray` runs pure NumPy. That keeps the test suite
+backend-agnostic — the parity tests in `tests/test_ops_mlx.py` confirm
+the two paths agree on synthetic boxes when MLX is available, and the
+end-to-end numerical check in `scripts/validate_yolov8_pose.py` runs the
+full numpy path on Linux.
+
+### Switching from MLX to NumPy
+
+There is exactly **one** MLX → NumPy boundary per inference call, by
+design. MLX is lazy: every op (forward pass, slice, `max`/`argmax`,
+`xywh→xyxy`) builds a graph and returns immediately without doing any
+work. Compute is only triggered when something forces evaluation —
+either an explicit `mx.eval(...)` or a host-side read like
+`np.asarray(mx_array)` / `mx_array.item()`.
+
+The predictor exploits this by stacking up *all* the per-anchor decode
+work on the lazy graph and forcing **one** `mx.eval` over the
+combined result (boxes + scores + cls + flat keypoints). The single
+boundary crossing pays for the forward pass *and* the decode together,
+so we don't round-trip per intermediate. Concretely, in
+`engine/predictor.py::_decode_anchors_mlx`:
+
+```python
+score    = mx.max(cls_scores,    axis=-1)   # lazy
+cls_idx  = mx.argmax(cls_scores, axis=-1)   # lazy
+box_xyxy = ops_mlx.xywh_to_xyxy(box_xywh)   # lazy
+mx.eval(box_xyxy, score, cls_idx, kpts_flat)   # ← one boundary, fused
+return np.asarray(box_xyxy), np.asarray(score), ...
+```
+
+NMS does the same trick: the IoU matrix is built on device and then
+materialized once with `np.asarray(iou)` so the greedy keep-loop has
+the (small, already-resident) matrix to scan. After that we stay in
+NumPy — the data is already tiny (≤a few hundred boxes), and pushing
+it back to the GPU would cost more than it saves.
+
+Rule of thumb: **MLX for shape-stable batched ops over thousands of
+items, NumPy once the data shrinks to "a few".** Crossing the boundary
+is cheap once, expensive in a loop — `np.asarray` triggers eval and
+flushes the graph.
 
 ---
 
