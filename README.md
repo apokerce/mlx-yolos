@@ -13,6 +13,23 @@ Pure [MLX](https://github.com/ml-explore/mlx) inference for [Ultralytics](https:
 > **Architecture-ready (not wired to a CLI yet)**
 > - `yolov8` plain detection — drop in a `yolov8.yaml` and reuse `DetectV8` + the `detect` post-processor.
 
+<details>
+<summary><b>Table of contents</b></summary>
+
+- [Attribution & License](#attribution--license-read-first) — start here
+- [Install](#install)
+- [Quick start (yolov8-pose)](#quick-start-yolov8-pose)
+  - [Convert weights](#1-convert-weights-one-time)
+  - [Predict (CLI)](#2-predict)
+  - [Predict (library)](#or-as-a-library)
+- [Headline results](#headline-results)
+- [Deeper docs](#deeper-docs)
+- [Caveats](#caveats)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
+
+</details>
+
 ---
 
 ## Attribution & License (READ FIRST)
@@ -46,6 +63,8 @@ pip install -e '.[convert]'
 ```
 
 Inference works on macOS / Apple Silicon (where MLX has Metal acceleration). The conversion step works anywhere — it doesn't import `mlx`.
+
+Optional extras: `[val]` (pycocotools, for COCO mAP eval) and `[benchmark]` (torch + ultralytics + matplotlib, for the cross-backend timing comparison). Both are documented in [`docs/VALIDATION.md`](docs/VALIDATION.md) and [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
 
 ---
 
@@ -106,9 +125,7 @@ To draw boxes + class badges + skeleton:
 results[0].plot().save("annotated.jpg")
 ```
 
-`Results.plot()` automatically picks the right drawing path: boxes + class
-badges always, plus the COCO skeleton when keypoints are available. If you
-need the lower-level helpers directly:
+`Results.plot()` automatically picks the right drawing path: boxes + class badges always, plus the COCO skeleton when keypoints are available. If you need the lower-level helpers directly:
 
 ```python
 from mlxyolos.utils import draw_boxes, draw_pose
@@ -125,76 +142,41 @@ img.save("annotated.jpg")
 
 ---
 
-## Repository layout
+## Headline results
 
-```
-mlx-yolos/
-├── pyproject.toml
-├── README.md
-├── LICENSE                  # AGPL-3.0 (matches Ultralytics)
-├── src/mlxyolos/
-│   ├── __init__.py          # exposes YOLO
-│   ├── cli.py               # `mlx-yolos convert | predict`
-│   ├── cfg/models/v8/
-│   │   └── yolov8-pose.yaml
-│   ├── converters/
-│   │   └── ultralytics_pt.py  # PT → MLX safetensors (pure CPU, no MLX)
-│   ├── engine/
-│   │   ├── model.py         # YOLO façade
-│   │   ├── predictor.py     # task-dispatched post-processing
-│   │   └── results.py       # Boxes / Keypoints / Results
-│   ├── nn/
-│   │   ├── tasks.py         # YAML parser → BaseModel
-│   │   └── modules/
-│   │       ├── conv.py      # Conv / DWConv / Concat (NHWC)
-│   │       ├── block.py     # Bottleneck / C2f / SPPF
-│   │       └── head.py      # DetectV8 / PoseV8
-│   └── utils/
-│       ├── ops.py           # numpy: letterbox / NMS / scale_coords
-│       ├── ops_mlx.py       # MLX-native: xywh_to_xyxy / scale_* / NMS-with-on-device-IoU
-│       └── plotting.py      # draw_boxes / draw_pose
-├── scripts/
-│   └── validate_yolov8_pose.py  # numerical parity check vs Ultralytics
-└── tests/
-    └── test_converter.py
-```
+Apple Silicon, `yolov8-pose`. Methodology and full per-scale reproduction steps in [`docs/VALIDATION.md`](docs/VALIDATION.md) and [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
 
-Adding a new model family is a three-step recipe:
+**Accuracy** — `yolov8n-pose` on COCO val2017 (5 000 images, imgsz=640, conf=0.001, iou=0.7). Ultralytics column from running `yolo pose val model=yolov8n-pose.pt data=coco-pose.yaml` on the same checkpoint.
 
-1. Drop a YAML in `src/mlxyolos/cfg/models/<family>/`.
-2. If the head differs from `DetectV8`/`PoseV8`, add a class in `nn/modules/head.py` and register it in `nn/tasks.py::MODULE_MAP` and `nn/tasks.py::HEAD_BUILDERS`.
-3. Add a post-processor in `engine/predictor.py::POSTPROCESSORS` and a row in `engine/model.py::_HEAD_TO_TASK`.
+| Metric                  | mlx-yolos | Ultralytics | Δ        |
+|-------------------------|----------:|------------:|---------:|
+| pose AP @ IoU 0.50:0.95 | **49.9**  | 50.5        | **−0.6** |
+| pose AP @ IoU 0.50      | **78.7**  | 80.1        | **−1.4** |
+| box  AP @ IoU 0.50:0.95 | **45.5**  | 54.0        | **−8.5** |
 
-The converter does **not** need to know about new families — module containers are plain Python lists, so state-dict keys match Ultralytics 1:1 and the only operations are conv-weight transpose + dropping bookkeeping.
+Pose AP matches Ultralytics within 0.6 pt — that's a faithful inference port. The box AP gap is bigger than noise and is **not** a forward-pass issue; it's because Ultralytics' `val` pipeline uses **rectangular letterbox** (`rect=True`, padding to stride-aligned non-square dims) while mlx-yolos always pads to a 640×640 square today. Per-image numerical parity is `max abs diff = 6.4e-4` against Ultralytics on `bus.jpg`.
+
+**Speed** — all five `yolov8{n,s,m,l,x}-pose` scales, 200 random COCO val images per cell, imgsz=640, conf=0.25, iou=0.45, warmup=40.
+
+![Cross-backend inference benchmark across 5 scales](docs/benchmark.png)
+
+Mean latency, ms / image (lower is better; **bold** = fastest backend in column):
+
+| Backend     | yolov8n   | yolov8s   | yolov8m   | yolov8l   | yolov8x    |
+|-------------|----------:|----------:|----------:|----------:|-----------:|
+| **mlx**     | **16.52** | **27.93** | **53.63** | 84.43     | 134.52     |
+| torch-cpu   | 35.60     | 53.88     | 90.63     | 143.84    | 195.92     |
+| torch-mps   | 33.12     | 35.59     | 51.21     | **69.89** | **98.91**  |
+
+There's a **crossover at yolov8m / yolov8l**: mlx wins at the small-to-medium end (the entire pipeline stays on Metal with one eval boundary, no torchvision-NMS CPU fallback), torch-mps catches up once compute dominates over per-op launch overhead. Pick the backend by model size — see [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the full per-scale table and discussion.
 
 ---
 
-## Numerical validation
+## Deeper docs
 
-`scripts/validate_yolov8_pose.py` is a no-MLX-required parity check: it builds a PyTorch model that mirrors mlx-yolos's class layout exactly (same NHWC kernel layout, same BN `eps=1e-3`), loads the converted safetensors into it, and compares its forward output against Ultralytics on `bus.jpg`. On the released yolov8n-pose checkpoint it produces:
-
-| metric                     | result      |
-|----------------------------|-------------|
-| missing keys / extra keys  | 0 / 0       |
-| max abs diff vs Ultralytics| 6.4e-4      |
-| detections > 0.25 conf     | 30 (matches Ultralytics exactly) |
-
-```bash
-python scripts/validate_yolov8_pose.py
-```
----
-
-## How conversion works
-
-The converter at `src/mlxyolos/converters/ultralytics_pt.py` does just three things:
-
-1. Drops `*.num_batches_tracked` (MLX BatchNorm doesn't have it).
-2. Drops `*.dfl.conv.weight` — that's a constant `arange` projection, reconstructed at runtime in `DetectV8`.
-3. Transposes 4-D conv weights from PyTorch `(Cout, Cin, kH, kW)` to MLX `(Cout, kH, kW, Cin)`.
-
-Everything else is copied verbatim. There are **no model-specific regex remappers** because mlx-yolos's `BaseModel` exposes its layer list as plain `self.model = [...]`, matching Ultralytics' attribute name; submodule containers (`m`, `cv2`, `cv3`, `cv4`) are also plain lists, so MLX's `tree_flatten` produces parameter keys that line up with the Ultralytics state dict directly.
-
-That property is what keeps the converter from growing as new families are added.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — repository layout, how conversion works, and the recipe for adding a new model family.
+- [`docs/VALIDATION.md`](docs/VALIDATION.md) — per-image numerical parity + COCO val2017 mAP methodology, full results tables, the `catIds` gotcha for bbox eval, and reproduction steps.
+- [`docs/BENCHMARK.md`](docs/BENCHMARK.md) — cross-backend timing methodology, the small-model / large-model crossover discussion, and full per-scale tables.
 
 ---
 
@@ -215,4 +197,4 @@ That property is what keeps the converter from growing as new families are added
 
 ## License
 
-AGPL-3.0-only. See [LICENSE](LICENSE) for the full text and the Attribution section above for what that means in practice.
+AGPL-3.0-only. See [LICENSE](LICENSE) for the full text and the [Attribution](#attribution--license-read-first) section above for what that means in practice.
