@@ -35,6 +35,20 @@ convert = [
     "torch>=2.0",
     "ultralytics>=8.0",
 ]
+val = [
+    # COCO mAP evaluation via the canonical pycocotools.
+    "pycocotools>=2.0",
+]
+benchmark = [
+    # Apples-to-apples MLX vs PyTorch (CPU/MPS) timing on COCO val2017.
+    # Pulls torch + ultralytics so the same yolov8n-pose weights run on
+    # all three backends through their official Python APIs; matplotlib
+    # is for the bar-chart export written next to the printed table.
+    "torch>=2.0",
+    "ultralytics>=8.0",
+    "pycocotools>=2.0",
+    "matplotlib>=3.7",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
