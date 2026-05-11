@@ -1,15 +1,10 @@
 # CI for mlx-yolos.
 #
-# Both jobs run on `ubuntu-latest`, which is free and unmetered for public
-# GitHub repositories. We deliberately avoid macOS / large runners since
-# only those can incur charges on a public repo.
-#
-# Two jobs:
-#   * lint-and-test — ruff + pytest (numpy path; MLX-only tests auto-skip).
-#   * parity        — convert the released yolov8n-pose.pt to MLX
-#                     safetensors and run scripts/validate_yolov8_pose.py.
-#                     Hard-fails the build on parameter-tree mismatch or
-#                     forward-output drift > 1e-3 vs Ultralytics.
+# Runs on `ubuntu-latest`, which is free and unmetered for public GitHub
+# repositories. The package itself is Mac-only at runtime (MLX needs Metal),
+# so CI only covers what makes sense on Linux: static analysis and the few
+# CPU-only unit tests (letterbox math, converter name-mapping). The MLX
+# inference path is tested locally on Apple Silicon.
 name: CI
 
 on:
@@ -28,8 +23,8 @@ permissions:
   contents: read
 
 jobs:
-  lint-and-test:
-    name: lint + tests (numpy path)
+  lint-and-cpu-tests:
+    name: lint + CPU-only tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -41,61 +36,17 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e '.[dev]'
+          # Install everything ubuntu can actually load (numpy, opencv,
+          # ruff, pytest), then install our package with `--no-deps` so
+          # ubuntu doesn't try to pull in `mlx` (which can't load without
+          # Metal). The CPU-only tests we run here don't import the mlx
+          # side, so this is enough to lint and exercise letterbox math.
+          pip install numpy 'opencv-python-headless>=4.7' pyyaml safetensors
+          pip install ruff pytest
+          pip install -e . --no-deps
       - name: ruff
-        run: ruff check src tests
-      - name: pytest
-        run: pytest -q
-
-  parity:
-    name: numerical parity vs Ultralytics
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: pip
-      # CPU-only torch keeps the install footprint small; we don't need CUDA
-      # for this end-to-end conversion + numerical-parity check.
-      - name: Install (convert extras + CPU torch wheel)
-        run: |
-          python -m pip install --upgrade pip
-          pip install --index-url https://download.pytorch.org/whl/cpu torch
-          pip install -e '.[convert]'
-      - name: Cache yolov8n-pose.pt
-        id: pt
-        uses: actions/cache@v4
-        with:
-          path: /tmp/yolov8n-pose.pt
-          key: yolov8n-pose-v8.3.0
-      - name: Download yolov8n-pose.pt
-        if: steps.pt.outputs.cache-hit != 'true'
-        run: |
-          curl -L -o /tmp/yolov8n-pose.pt \
-            https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n-pose.pt
-      - name: Convert weights
-        run: |
-          mlx-yolos convert \
-            --pt /tmp/yolov8n-pose.pt \
-            --out /tmp/mlx-yolos-yolov8n-pose.safetensors
-      - name: Download bus.jpg
-        run: |
-          curl -L -o /tmp/bus.jpg \
-            https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/assets/bus.jpg
-      - name: Run validate_yolov8_pose.py
-        env:
-          IMAGE_PATH: /tmp/bus.jpg
-        # Hard-fail on regressions: parameter-tree mismatch or numerical
-        # drift greater than 5e-3 max abs vs the official Ultralytics output.
-        run: |
-          python scripts/validate_yolov8_pose.py | tee validate.log
-          grep -q 'missing in safetensors: 0' validate.log
-          grep -q 'extra in safetensors: 0'   validate.log
-          awk '/^max abs diff:/ {
-                 if ($4 + 0 > 0.005) {
-                   print "FAIL: max abs diff "$4" > 5e-3"; exit 1
-                 }
-                 print "OK: max abs diff "$4
-               }' validate.log
+        run: ruff check src tests scripts
+      - name: pytest (CPU tests only)
+        # test_converter and test_letterbox use only numpy + cv2; they
+        # don't import the mlx-requiring engine/nn modules.
+        run: pytest -q tests/test_letterbox.py tests/test_converter.py

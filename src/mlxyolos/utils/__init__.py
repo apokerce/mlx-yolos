@@ -1,16 +1,12 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-"""mlx-yolos utility helpers."""
+"""mlx-yolos utility helpers.
 
-from .ops import letterbox, nms, scale_coords, scale_keypoints, xywh_to_xyxy
+CPU-only helpers (letterbox, draw_boxes / draw_pose) are re-exported here.
+MLX-native post-processing lives in ``mlxyolos.utils.ops_mlx`` and is
+imported on demand to keep ``import mlxyolos.utils`` itself MLX-free.
+"""
+
+from .ops import letterbox
 from .plotting import COCO_SKELETON, draw_boxes, draw_pose
 
-__all__ = [
-    "letterbox",
-    "nms",
-    "scale_coords",
-    "scale_keypoints",
-    "xywh_to_xyxy",
-    "COCO_SKELETON",
-    "draw_boxes",
-    "draw_pose",
-]
+__all__ = ["letterbox", "COCO_SKELETON", "draw_boxes", "draw_pose"]

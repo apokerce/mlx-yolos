@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image
 
 from mlxyolos.engine.predictor import Predictor
 from mlxyolos.engine.results import Results
@@ -102,11 +101,13 @@ class YOLO:
 
     def predict(
         self,
-        source: str | Path | np.ndarray | Image.Image | list,
+        source: str | Path | np.ndarray | list,
         *,
         imgsz: int = 640,
         conf: float = 0.25,
         iou: float = 0.45,
+        rect: bool = True,
+        scaleup: bool = True,
     ) -> list[Results]:
         predictor = Predictor(
             model=self.model,
@@ -115,7 +116,9 @@ class YOLO:
             names=self.names,
             kpt_shape=self.kpt_shape,
         )
-        return predictor(source, imgsz=imgsz, conf=conf, iou=iou)
+        return predictor(
+            source, imgsz=imgsz, conf=conf, iou=iou, rect=rect, scaleup=scaleup
+        )
 
     # convenience: callable shorthand
     def __call__(self, source: Any, **kw: Any) -> list[Results]:

@@ -23,11 +23,11 @@ Backends absent from the host (no MLX runtime, no MPS device, no torch installed
 
 ### Mean latency per backend × scale (ms / image, lower is better)
 
-| Backend     | yolov8n  | yolov8s  | yolov8m  | yolov8l  | yolov8x   |
-|-------------|---------:|---------:|---------:|---------:|----------:|
-| **mlx**     | **16.52** | **27.93** | **53.63** | 84.43    | 134.52    |
-| torch-cpu   | 35.60    | 53.88    | 90.63    | 143.84   | 195.92    |
-| torch-mps   | 33.12    | 35.59    | 51.21    | **69.89** | **98.91** |
+| Backend     | yolov8n   | yolov8s   | yolov8m   | yolov8l   | yolov8x    |
+|-------------|----------:|----------:|----------:|----------:|-----------:|
+| **mlx**     | **14.25** | **22.16** | **43.68** | **68.09** | 133.39     |
+| torch-cpu   | 35.30     | 52.51     | 90.37     | 143.20    | 191.91     |
+| torch-mps   | 32.16     | 36.99     | 50.98     | 69.79     | **98.01**  |
 
 Bold = fastest backend in the column.
 
@@ -35,31 +35,31 @@ Bold = fastest backend in the column.
 
 | Scale  | Backend     | mean (ms) | median (ms) | p95 (ms) | throughput     | avg obj/img | wall (s) |
 |--------|-------------|----------:|------------:|---------:|---------------:|------------:|---------:|
-| n      | mlx         | **16.52** | 16.40       | 18.07    | **60.6 img/s** | 1.18        | 3.3      |
-| n      | torch-cpu   | 35.60     | 35.76       | 41.87    | 28.1 img/s     | 1.15        | 7.1      |
-| n      | torch-mps   | 33.12     | 21.19       | 55.31    | 30.2 img/s     | 1.15        | 6.6      |
-| s      | mlx         | **27.93** | 27.85       | 29.66    | **35.8 img/s** | 1.19        | 5.6      |
-| s      | torch-cpu   | 53.88     | 53.51       | 64.30    | 18.6 img/s     | 1.21        | 10.8     |
-| s      | torch-mps   | 35.59     | 23.99       | 69.16    | 28.1 img/s     | 1.21        | 7.1      |
-| m      | mlx         | **53.63** | 53.54       | 55.42    | **18.6 img/s** | 1.18        | 10.7     |
-| m      | torch-cpu   | 90.63     | 90.39       | 113.10   | 11.0 img/s     | 1.23        | 18.1     |
-| m      | torch-mps   | 51.21     | 38.14       | 84.05    | 19.5 img/s     | 1.23        | 10.2     |
-| l      | mlx         | 84.43     | 84.07       | 88.38    | 11.8 img/s     | 1.19        | 16.9     |
-| l      | torch-cpu   | 143.84    | 143.24      | 178.40   | 7.0 img/s      | 1.20        | 28.8     |
-| l      | torch-mps   | **69.89** | 56.85       | 113.15   | **14.3 img/s** | 1.20        | 14.0     |
-| x      | mlx         | 134.52    | 133.89      | 142.72   | 7.4 img/s      | 1.19        | 26.9     |
-| x      | torch-cpu   | 195.92    | 192.52      | 251.19   | 5.1 img/s      | 1.18        | 39.2     |
-| x      | torch-mps   | **98.91** | 75.38       | 133.67   | **10.1 img/s** | 1.18        | 19.8     |
+| n      | mlx         | **14.25** | 14.09       | 17.05    | **70.2 img/s** | 1.15        | 2.8      |
+| n      | torch-cpu   | 35.30     | 35.26       | 40.99    | 28.3 img/s     | 1.15        | 7.1      |
+| n      | torch-mps   | 32.16     | 20.44       | 51.97    | 31.1 img/s     | 1.15        | 6.4      |
+| s      | mlx         | **22.16** | 21.77       | 27.34    | **45.1 img/s** | 1.21        | 4.4      |
+| s      | torch-cpu   | 52.51     | 52.60       | 61.38    | 19.0 img/s     | 1.21        | 10.5     |
+| s      | torch-mps   | 36.99     | 24.23       | 69.84    | 27.0 img/s     | 1.21        | 7.4      |
+| m      | mlx         | **43.68** | 43.18       | 54.01    | **22.9 img/s** | 1.23        | 8.7      |
+| m      | torch-cpu   | 90.37     | 90.46       | 110.13   | 11.1 img/s     | 1.23        | 18.1     |
+| m      | torch-mps   | 50.98     | 37.35       | 82.16    | 19.6 img/s     | 1.23        | 10.2     |
+| l      | mlx         | **68.09** | 65.26       | 85.07    | **14.7 img/s** | 1.20        | 13.6     |
+| l      | torch-cpu   | 143.20    | 143.94      | 181.21   | 7.0 img/s      | 1.20        | 28.6     |
+| l      | torch-mps   | 69.79     | 55.54       | 109.76   | 14.3 img/s     | 1.20        | 14.0     |
+| x      | mlx         | 133.39    | 121.45      | 165.99   | 7.5 img/s      | 1.18        | 26.7     |
+| x      | torch-cpu   | 191.91    | 191.72      | 249.72   | 5.2 img/s      | 1.18        | 38.4     |
+| x      | torch-mps   | **98.01** | 76.19       | 138.62   | **10.2 img/s** | 1.18        | 19.6     |
 
 ---
 
 ## How to read the numbers
 
-There's a **crossover at the m/l boundary** that's worth understanding before you pick a backend for production:
+The crossover sits at **yolov8x** — `mlx` wins or ties through `yolov8l`, and only loses to `torch-mps` at the largest scale:
 
-- **Small models (n, s, m): mlx wins.** yolov8n / yolov8s / yolov8m are small enough that *kernel launch overhead and host↔device sync cost* dominate the wall-clock. MLX runs the entire pipeline (pre-process, forward, decode, NMS IoU matrix) on Metal with lazy graph fusion and a single eval boundary; PyTorch on MPS pays per-op launch overhead and bounces back to CPU for the torchvision NMS, which adds up. mlx is **2.1× faster** at yolov8n, **1.5× faster** at yolov8s, ~tied with torch-mps at yolov8m.
-- **Large models (l, x): torch-mps wins.** Now compute is the dominant cost (yolov8x is ~21× more FLOPs than yolov8n), and PyTorch MPS' tuned matmul kernels pay for the per-op overhead they couldn't amortize before. torch-mps is **1.21× faster than mlx at yolov8l** and **1.36× faster at yolov8x**.
-- **torch-cpu loses everywhere.** Predictably — even for the smallest model the CPU path is ~2× slower than the GPU paths and the gap widens with FLOPs (~1.5× → ~2× behind torch-mps from n to x).
+- **Small to large models (n / s / m / l): mlx wins or ties.** mlx is **2.26× faster than torch-mps at yolov8n**, 1.67× at yolov8s, 1.17× at yolov8m, and **essentially tied at yolov8l** (68.1 vs 69.8 ms — a ~2 % margin that's inside the run-to-run variance). The whole pipeline (pre-process, forward, decode, NMS IoU matrix) stays on Metal with lazy graph fusion and a single eval boundary; PyTorch on MPS pays per-op launch overhead and bounces to CPU for the torchvision NMS.
+- **Largest model (x): torch-mps pulls ahead.** At yolov8x compute is the dominant cost (~21× more FLOPs than yolov8n) and PyTorch MPS' tuned matmul kernels finally amortize the per-op overhead. torch-mps is **1.36× faster than mlx at yolov8x**.
+- **torch-cpu loses everywhere.** Predictably — even for the smallest model the CPU path is ~2.5× slower than mlx, and ~2× slower than torch-mps at yolov8x.
 - **`avg obj/img` agrees across all three** at every scale (1.15–1.23). Same NMS shape, no post-processing divergence — the latency comparison is apples-to-apples.
 
 So the practical rule is: **use mlx for n/s/m, use torch-mps for l/x** if you're running yolov8-pose at imgsz=640 today. The crossover point will move depending on imgsz and image complexity, but the underlying physics — overhead-bound on small graphs, compute-bound on big ones — is the same.

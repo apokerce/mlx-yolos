@@ -6,6 +6,14 @@ and the keypoints predictions, and reports MLX timing alongside (mean /
 median / p95 per-image inference latency, throughput, and average
 detection count for sanity).
 
+Both bbox and keypoint mAP are evaluated against
+``person_keypoints_val2017.json`` — the same ground-truth file Ultralytics'
+``yolo pose val`` uses for both metrics. **Don't switch to
+``instances_val2017.json`` for bbox** thinking it's "more correct" — that
+file has ~4 400 extra person annotations (crowd boxes, occluded / tiny
+persons without keypoint labels) that Ultralytics' pipeline never asks
+the model to detect; including them tanks recall by 7 pt for no gain.
+
 Setup:
     bash scripts/get_coco_pose_val.sh
     pip install -e '.[val]'
@@ -58,6 +66,8 @@ def _build_predictions(
     imgsz: int,
     conf: float,
     iou: float,
+    rect: bool,
+    scaleup: bool,
     limit: int | None,
     verbose_every: int,
 ) -> tuple[list[dict[str, Any]], list[float], list[int]]:
@@ -81,7 +91,9 @@ def _build_predictions(
             continue
 
         t0 = time.perf_counter()
-        results = yolo.predict(str(path), imgsz=imgsz, conf=conf, iou=iou)
+        results = yolo.predict(
+            str(path), imgsz=imgsz, conf=conf, iou=iou, rect=rect, scaleup=scaleup
+        )
         timings_ms.append((time.perf_counter() - t0) * 1000.0)
 
         r = results[0]
@@ -130,14 +142,23 @@ def _coco_eval(
     *,
     max_dets: list[int],
     cat_ids: list[int] | None = None,
+    img_ids: list[int] | None = None,
 ):
     """Run pycocotools mAP eval and print its standard summary.
 
-    If ``cat_ids`` is given, restrict the AP averaging to those categories.
-    Critical for bbox mAP on yolov8-pose: the instances GT carries all 80
-    COCO classes, but we only predict ``person`` (id 1). Without this
-    filter pycocotools averages our person AP across 80 categories with
-    79 zeros, dragging the overall mAP to ~1/80 of the true value.
+    Two pycocotools parameters matter for matching Ultralytics' val:
+
+    1. ``params.catIds = cat_ids`` — restrict the AP average to the requested
+       categories. For our pose eval against ``person_keypoints_val2017.json``
+       this is a no-op (the GT JSON only has one category), but it's left
+       explicit for documentation and for future detect-task evals.
+    2. ``params.imgIds`` — restrict the eval *image set*. Defaulting
+       pycocotools to "all images in the GT JSON" includes ~2 300 images
+       with no person GT plus another ~350 with bbox-only persons (no
+       visible keypoints) that Ultralytics' ``val2017.txt`` filters out
+       (criterion: at least one annotation with ``num_keypoints > 0``).
+       Pass the same 2 346-image set in here and the eval lines up with
+       what ``yolo pose val`` reports.
     """
     from pycocotools.coco import COCO
     from pycocotools.cocoeval import COCOeval
@@ -162,6 +183,15 @@ def _coco_eval(
         coco_eval.params.maxDets = list(max_dets)
     if cat_ids:
         coco_eval.params.catIds = list(cat_ids)
+    if img_ids is None and cat_ids:
+        # Fallback: any image with a GT in the target categories.
+        img_ids = sorted(coco_gt.getImgIds(catIds=cat_ids))
+    if img_ids is not None:
+        coco_eval.params.imgIds = list(img_ids)
+        print(
+            f"[{iou_type}] evaluating on {len(img_ids)} images "
+            f"(full GT JSON has {len(coco_gt.getImgIds())})"
+        )
     coco_eval.evaluate()
     coco_eval.accumulate()
     print(f"\n[{iou_type} mAP]")
@@ -182,6 +212,31 @@ def main() -> int:
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--conf", type=float, default=0.001, help="Ultralytics eval default; do not raise")
     p.add_argument("--iou", type=float, default=0.7, help="NMS IoU; matches Ultralytics val")
+    p.add_argument(
+        "--rect",
+        dest="rect",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Rectangular letterbox (pads each dim to a stride-multiple). "
+            "Default OFF for this script — Ultralytics' `yolo pose val` uses "
+            "square letterbox, so the apples-to-apples val comparison goes "
+            "through square mode."
+        ),
+    )
+    p.add_argument(
+        "--scaleup",
+        dest="scaleup",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Allow upscaling images smaller than --imgsz. Default OFF for this "
+            "script — Ultralytics' `yolo pose val` does NOT upscale, so val "
+            "comparison goes through scaleup=False. About 18 %% of COCO val2017 "
+            "has both dims < 640, and that's where most small-object GTs live, "
+            "so this flag materially affects box AP @ small."
+        ),
+    )
     p.add_argument("--limit", type=int, default=None, help="evaluate only the first N images")
     p.add_argument("--verbose-every", type=int, default=500, help="progress print interval")
     p.add_argument(
@@ -191,21 +246,44 @@ def main() -> int:
 
     data_dir = Path(args.data_dir)
     image_dir = data_dir / "images" / "val2017"
-    keypoints_gt = data_dir / "annotations" / "person_keypoints_val2017.json"
-    bbox_gt = data_dir / "annotations" / "instances_val2017.json"
+    # Use person_keypoints_val2017.json for BOTH bbox and keypoint eval —
+    # Ultralytics' pose-val pipeline does the same (see
+    # `ultralytics/models/yolo/pose/val.py::eval_json`). person_keypoints
+    # annotations carry both `bbox` and `keypoints` per object, but cover
+    # only the ~2 346 "well-keypointed" person instances. Evaluating bbox
+    # against `instances_val2017.json` (cat=1) adds ~4 400 extra person
+    # GTs that *don't* have keypoints — crowd boxes, occluded / tiny
+    # persons, etc. — which Ultralytics' val pipeline never asks the
+    # model to find. The recall denominator difference is the missing
+    # 7 pt of box AP from earlier rounds.
+    gt_path = data_dir / "annotations" / "person_keypoints_val2017.json"
 
-    for required in (image_dir, keypoints_gt, bbox_gt):
+    for required in (image_dir, gt_path):
         if not required.exists():
             print(f"missing {required} — run scripts/get_coco_pose_val.sh first", file=sys.stderr)
             return 1
 
-    # Load image_id → file_name from the keypoints annotations (it lists every
-    # val image, since person_keypoints uses the same image set as instances).
-    print(f"loading annotations from {keypoints_gt}")
-    with open(keypoints_gt) as f:
+    # Load image_id → file_name (the annotations file lists every val2017
+    # image even though it only has annotations for the person-keypoint subset).
+    print(f"loading annotations from {gt_path}")
+    with open(gt_path) as f:
         ann = json.load(f)
     id_to_filename = {im["id"]: im["file_name"] for im in ann["images"]}
     image_ids = sorted(id_to_filename)
+
+    # Compute the eval image set the way Ultralytics' pose-val pipeline does:
+    # only images with at least one annotation that has ``num_keypoints > 0``.
+    # `coco-pose.yaml`'s `val: val2017.txt` is this exact 2 346-image subset.
+    # Without this filter our recall-denominator is 2 693 — the extra ~350
+    # images are the "bbox-only persons" (crowd, occluded, distant) that
+    # Ultralytics' val never asks the model to find.
+    eval_img_ids = sorted(
+        {a["image_id"] for a in ann["annotations"] if a.get("num_keypoints", 0) > 0}
+    )
+    print(
+        f"  total val2017 images in JSON: {len(id_to_filename)}"
+        f"  ({len(eval_img_ids)} have ≥1 annotation with num_keypoints > 0)"
+    )
 
     from mlxyolos import YOLO
 
@@ -217,7 +295,14 @@ def main() -> int:
     warmup_path = image_dir / id_to_filename[image_ids[0]]
     print(f"warming up on {warmup_path.name}")
     for _ in range(3):
-        yolo.predict(str(warmup_path), imgsz=args.imgsz, conf=args.conf, iou=args.iou)
+        yolo.predict(
+            str(warmup_path),
+            imgsz=args.imgsz,
+            conf=args.conf,
+            iou=args.iou,
+            rect=args.rect,
+            scaleup=args.scaleup,
+        )
 
     predictions, timings, det_counts = _build_predictions(
         yolo,
@@ -227,6 +312,8 @@ def main() -> int:
         imgsz=args.imgsz,
         conf=args.conf,
         iou=args.iou,
+        rect=args.rect,
+        scaleup=args.scaleup,
         limit=args.limit,
         verbose_every=args.verbose_every,
     )
@@ -241,23 +328,25 @@ def main() -> int:
     print(f"images processed:       {len(timings)}")
 
     # ---- mAP ---------------------------------------------------------------
-    # Both evaluations are restricted to category_id=1 (person). For
-    # keypoints this is a no-op (single-category task); for bbox it's
-    # critical — see _coco_eval for the gotcha it avoids.
+    # Both bbox and keypoint eval use the SAME person_keypoints_val2017.json
+    # ground truth and the SAME ~2 346-image set (annotations with
+    # num_keypoints > 0), matching Ultralytics' pose-val pipeline exactly.
     if not args.skip_bbox:
         _coco_eval(
-            bbox_gt,
+            gt_path,
             predictions,
             iou_type="bbox",
             max_dets=[1, 10, 100],
             cat_ids=[COCO_PERSON_CATEGORY],
+            img_ids=eval_img_ids,
         )
     _coco_eval(
-        keypoints_gt,
+        gt_path,
         predictions,
         iou_type="keypoints",
         max_dets=[20],
         cat_ids=[COCO_PERSON_CATEGORY],
+        img_ids=eval_img_ids,
     )
     return 0
 

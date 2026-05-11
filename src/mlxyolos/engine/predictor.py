@@ -1,65 +1,49 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-"""Generic predictor: image → preprocess → MLX forward → per-task post-processing.
+"""Generic predictor: image → preprocess → MLX forward → MLX post-process.
 
-The post-processors are dispatched by task and dual-backend: when called
-with an ``mx.array`` they keep the heavy per-anchor decode work
-(``argmax``/``max``/``xywh→xyxy`` over thousands of anchors, plus the
-NMS IoU matrix) on the Apple-Silicon GPU, evaluate once at the boundary,
-and finish on the host with the small post-filter set. When called with
-an ``np.ndarray`` (tests, MLX-less environments) they take the pure-numpy
-path. Adding a new task = registering one function in ``POSTPROCESSORS``,
-plus a head class and YAML elsewhere.
+Single MLX path. Pre-processing uses cv2 for image read + letterbox (matches
+Ultralytics' pixel grid). Everything else — per-anchor decode, ``xywh→xyxy``,
+the NMS IoU matrix, scale-back — runs on Metal via ``mlxyolos.utils.ops_mlx``.
+The post-processors materialize to numpy exactly once, at the boundary, for
+``Boxes`` / ``Keypoints`` container construction and JSON serialization.
+
+Adding a new task = registering one function in ``POSTPROCESSORS``, a head
+class in ``nn/modules/head.py``, and a YAML.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+import cv2
+import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
-from PIL import Image
-
-if TYPE_CHECKING:  # pragma: no cover — type hints only
-    import mlx.core as mx_t  # noqa: F401
-    import mlx.nn as nn
 
 from mlxyolos.engine.results import Boxes, Keypoints, Results
 from mlxyolos.utils.ops import letterbox
-from mlxyolos.utils.ops import nms as nms_np
-from mlxyolos.utils.ops import scale_coords as scale_coords_np
-from mlxyolos.utils.ops import scale_keypoints as scale_keypoints_np
-from mlxyolos.utils.ops import xywh_to_xyxy as xywh_to_xyxy_np
+from mlxyolos.utils.ops_mlx import nms as nms_mlx
+from mlxyolos.utils.ops_mlx import scale_coords as scale_coords_mlx
+from mlxyolos.utils.ops_mlx import scale_keypoints as scale_keypoints_mlx
+from mlxyolos.utils.ops_mlx import xywh_to_xyxy as xywh_to_xyxy_mlx
 
 __all__ = ["Predictor", "POSTPROCESSORS"]
 
 
 # ---------------------------------------------------------------------------
-# Backend dispatch
+# Decode helpers — run on device, eval once at the boundary
 # ---------------------------------------------------------------------------
 
 
-def _is_mlx(x: Any) -> bool:
-    """Return True iff ``x`` is an ``mlx.core.array`` instance.
+def _decode_anchors(pred: mx.array, nc: int, nk: int):
+    """Run heavy per-anchor decode on Metal, eval once, return MLX arrays.
 
-    Imported lazily so this module stays usable on machines without MLX.
+    ``max``/``argmax`` over class scores and ``xywh → xyxy`` happen on the
+    GPU and get fused into the same eval boundary as the model's forward,
+    so the host doesn't pay for individual round-trips.
     """
-    cls = type(x)
-    return cls.__module__.startswith("mlx") and cls.__name__ == "array"
-
-
-def _decode_anchors_mlx(pred, nc: int, nk: int):
-    """Run heavy per-anchor decode on device, eval once, return numpy arrays.
-
-    Inputs come straight from the model as ``(A, 4 + nc + nk)``. We do
-    ``max`` / ``argmax`` over the class scores and the ``xywh → xyxy`` decode
-    on the GPU; the single ``mx.eval`` brings everything across the boundary
-    together so the host doesn't pay for individual round-trips.
-    """
-    import mlx.core as mx
-
-    from mlxyolos.utils.ops_mlx import xywh_to_xyxy as xywh_to_xyxy_mlx
-
     box_xywh = pred[:, :4]
     cls_scores = pred[:, 4 : 4 + nc]
     score = mx.max(cls_scores, axis=-1)
@@ -69,50 +53,18 @@ def _decode_anchors_mlx(pred, nc: int, nk: int):
     if nk > 0:
         kpts_flat = pred[:, 4 + nc : 4 + nc + nk]
         mx.eval(box_xyxy, score, cls_idx, kpts_flat)
-        return (
-            np.asarray(box_xyxy),
-            np.asarray(score),
-            np.asarray(cls_idx).astype(np.float32),
-            np.asarray(kpts_flat),
-        )
+        return box_xyxy, score, cls_idx, kpts_flat
     mx.eval(box_xyxy, score, cls_idx)
-    return (
-        np.asarray(box_xyxy),
-        np.asarray(score),
-        np.asarray(cls_idx).astype(np.float32),
-        None,
-    )
-
-
-def _decode_anchors_np(pred: np.ndarray, nc: int, nk: int):
-    """Pure-numpy decode (used in tests / MLX-less environments)."""
-    box_xywh = pred[:, :4]
-    cls_scores = pred[:, 4 : 4 + nc]
-    score = cls_scores.max(axis=-1)
-    cls_idx = cls_scores.argmax(axis=-1).astype(np.float32)
-    box_xyxy = xywh_to_xyxy_np(box_xywh)
-    kpts_flat = pred[:, 4 + nc : 4 + nc + nk] if nk > 0 else None
-    return box_xyxy, score, cls_idx, kpts_flat
-
-
-def _nms_dispatch(box_xyxy: np.ndarray, score: np.ndarray, iou_thr: float, *, on_device: bool) -> np.ndarray:
-    """NMS that puts the IoU matrix on device when MLX is available."""
-    if not on_device:
-        return nms_np(box_xyxy, score, iou_thr=iou_thr)
-    import mlx.core as mx
-
-    from mlxyolos.utils.ops_mlx import nms as nms_mlx
-
-    return nms_mlx(mx.array(box_xyxy), mx.array(score), iou_thr=iou_thr)
+    return box_xyxy, score, cls_idx, None
 
 
 # ---------------------------------------------------------------------------
-# Per-task post-processors (dual backend)
+# Per-task post-processors
 # ---------------------------------------------------------------------------
 
 
 def _postprocess_detect(
-    pred,
+    pred: mx.array,
     nc: int,
     *,
     conf: float,
@@ -121,31 +73,41 @@ def _postprocess_detect(
     pad: tuple[int, int],
     orig_shape: tuple[int, int],
 ) -> tuple[Boxes, None]:
-    on_device = _is_mlx(pred)
-    if on_device:
-        box_xyxy, score, cls, _ = _decode_anchors_mlx(pred, nc, nk=0)
-    else:
-        if pred.size == 0:
-            return Boxes(np.empty((0, 6), dtype=np.float32), orig_shape), None
-        box_xyxy, score, cls, _ = _decode_anchors_np(pred, nc, nk=0)
+    box_xyxy, score, cls, _ = _decode_anchors(pred, nc, nk=0)
 
-    keep_mask = score > conf
+    score_np = np.asarray(score)
+    keep_mask = score_np > conf
     if not keep_mask.any():
         return Boxes(np.empty((0, 6), dtype=np.float32), orig_shape), None
-    box_xyxy, score, cls = box_xyxy[keep_mask], score[keep_mask], cls[keep_mask]
+    keep_idx_np = np.flatnonzero(keep_mask)
+    keep_idx = mx.array(keep_idx_np.astype(np.int32))
 
-    keep = _nms_dispatch(box_xyxy, score, iou_thr=iou, on_device=on_device)
-    if len(keep) == 0:
+    box_xyxy = box_xyxy[keep_idx]
+    score = score[keep_idx]
+    cls = cls[keep_idx]
+
+    nms_keep_np = nms_mlx(box_xyxy, score, iou_thr=iou)
+    if len(nms_keep_np) == 0:
         return Boxes(np.empty((0, 6), dtype=np.float32), orig_shape), None
-    box_xyxy, score, cls = box_xyxy[keep], score[keep], cls[keep]
+    nms_keep = mx.array(nms_keep_np.astype(np.int32))
 
-    box_xyxy = scale_coords_np(box_xyxy, ratio, pad, orig_shape)
-    out = np.column_stack([box_xyxy, score, cls])
+    box_xyxy = scale_coords_mlx(box_xyxy[nms_keep], ratio, pad, orig_shape)
+    score = score[nms_keep]
+    cls = cls[nms_keep]
+    mx.eval(box_xyxy, score, cls)
+
+    out = np.column_stack(
+        [
+            np.asarray(box_xyxy),
+            np.asarray(score),
+            np.asarray(cls).astype(np.float32),
+        ]
+    )
     return Boxes(out, orig_shape), None
 
 
 def _postprocess_pose(
-    pred,
+    pred: mx.array,
     nc: int,
     *,
     conf: float,
@@ -156,36 +118,41 @@ def _postprocess_pose(
     kpt_shape: tuple[int, int],
 ) -> tuple[Boxes, Keypoints]:
     nk = kpt_shape[0] * kpt_shape[1]
-    on_device = _is_mlx(pred)
-    if on_device:
-        box_xyxy, score, cls, kpts_flat = _decode_anchors_mlx(pred, nc, nk=nk)
-    else:
-        if pred.size == 0:
-            return Boxes(np.empty((0, 6), dtype=np.float32), orig_shape), Keypoints(None, orig_shape)
-        box_xyxy, score, cls, kpts_flat = _decode_anchors_np(pred, nc, nk=nk)
+    box_xyxy, score, cls, kpts_flat = _decode_anchors(pred, nc, nk=nk)
+    assert kpts_flat is not None
 
-    keep_mask = score > conf
+    score_np = np.asarray(score)
+    keep_mask = score_np > conf
     if not keep_mask.any():
         return Boxes(np.empty((0, 6), dtype=np.float32), orig_shape), Keypoints(None, orig_shape)
-    box_xyxy = box_xyxy[keep_mask]
-    score = score[keep_mask]
-    cls = cls[keep_mask]
-    kpts_flat = kpts_flat[keep_mask]
+    keep_idx_np = np.flatnonzero(keep_mask)
+    keep_idx = mx.array(keep_idx_np.astype(np.int32))
 
-    keep = _nms_dispatch(box_xyxy, score, iou_thr=iou, on_device=on_device)
-    if len(keep) == 0:
+    box_xyxy = box_xyxy[keep_idx]
+    score = score[keep_idx]
+    cls = cls[keep_idx]
+    kpts_flat = kpts_flat[keep_idx]
+
+    nms_keep_np = nms_mlx(box_xyxy, score, iou_thr=iou)
+    if len(nms_keep_np) == 0:
         return Boxes(np.empty((0, 6), dtype=np.float32), orig_shape), Keypoints(None, orig_shape)
-    box_xyxy = box_xyxy[keep]
-    score = score[keep]
-    cls = cls[keep]
-    kpts_flat = kpts_flat[keep]
+    nms_keep = mx.array(nms_keep_np.astype(np.int32))
 
-    box_xyxy = scale_coords_np(box_xyxy, ratio, pad, orig_shape)
-    kpts = kpts_flat.reshape(-1, kpt_shape[0], kpt_shape[1])
-    kpts = scale_keypoints_np(kpts, ratio, pad)
+    box_xyxy = scale_coords_mlx(box_xyxy[nms_keep], ratio, pad, orig_shape)
+    score = score[nms_keep]
+    cls = cls[nms_keep]
+    kpts = kpts_flat[nms_keep].reshape(-1, kpt_shape[0], kpt_shape[1])
+    kpts = scale_keypoints_mlx(kpts, ratio, pad, orig_shape)
+    mx.eval(box_xyxy, score, cls, kpts)
 
-    out = np.column_stack([box_xyxy, score, cls])
-    return Boxes(out, orig_shape), Keypoints(kpts, orig_shape)
+    out = np.column_stack(
+        [
+            np.asarray(box_xyxy),
+            np.asarray(score),
+            np.asarray(cls).astype(np.float32),
+        ]
+    )
+    return Boxes(out, orig_shape), Keypoints(np.asarray(kpts), orig_shape)
 
 
 PostprocessFn = Callable[..., tuple[Boxes, Any]]
@@ -212,7 +179,9 @@ class Predictor:
         kpt_shape: tuple[int, int] | None = None,
     ) -> None:
         if task not in POSTPROCESSORS:
-            raise ValueError(f"Unsupported task {task!r}; expected one of {sorted(POSTPROCESSORS)}")
+            raise ValueError(
+                f"Unsupported task {task!r}; expected one of {sorted(POSTPROCESSORS)}"
+            )
         self.model = model
         self.task = task
         self.nc = nc
@@ -221,54 +190,58 @@ class Predictor:
 
     def __call__(
         self,
-        source: str | Path | np.ndarray | Image.Image | list,
+        source: str | Path | np.ndarray | list,
         *,
         imgsz: int = 640,
         conf: float = 0.25,
         iou: float = 0.45,
+        rect: bool = True,
+        scaleup: bool = True,
     ) -> list[Results]:
         sources = source if isinstance(source, list) else [source]
         results: list[Results] = []
         for src in sources:
-            results.append(self._run_one(src, imgsz=imgsz, conf=conf, iou=iou))
+            results.append(
+                self._run_one(
+                    src, imgsz=imgsz, conf=conf, iou=iou, rect=rect, scaleup=scaleup
+                )
+            )
         return results
 
     # ----- internals ---------------------------------------------------------
 
-    def _load_image(self, src: str | Path | np.ndarray | Image.Image) -> tuple[np.ndarray, str]:
+    def _load_image(self, src: str | Path | np.ndarray) -> tuple[np.ndarray, str]:
+        """Return ``(rgb_uint8_ndarray, path_str)``. cv2-based file loading."""
         if isinstance(src, (str, Path)):
-            img = np.asarray(Image.open(src).convert("RGB"))
-            return img, str(src)
-        if isinstance(src, Image.Image):
-            return np.asarray(src.convert("RGB")), ""
+            path = str(src)
+            bgr = cv2.imread(path)
+            if bgr is None:
+                raise FileNotFoundError(f"could not load image: {path}")
+            return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), path
         if isinstance(src, np.ndarray):
             if src.ndim != 3 or src.shape[-1] not in (3, 4):
-                raise ValueError(f"Expected (H, W, 3|4) ndarray, got shape {src.shape}")
-            return src[..., :3], ""
-        raise TypeError(f"Unsupported source type: {type(src)!r}")
+                raise ValueError(f"expected (H, W, 3|4) ndarray, got shape {src.shape}")
+            return src[..., :3].astype(np.uint8, copy=False), ""
+        raise TypeError(f"unsupported source type: {type(src)!r}")
 
     def _run_one(
         self,
-        src: str | Path | np.ndarray | Image.Image,
+        src: str | Path | np.ndarray,
         *,
         imgsz: int,
         conf: float,
         iou: float,
+        rect: bool = True,
+        scaleup: bool = True,
     ) -> Results:
-        # MLX is imported lazily so the post-processors stay usable on
-        # machines without MLX (the numpy branch in the dispatchers above).
-        import mlx.core as mx
-
         orig, path = self._load_image(src)
-        lb_img, ratio, pad = letterbox(orig, imgsz)
+        lb_img, ratio, pad = letterbox(orig, imgsz, rect=rect, scaleup=scaleup)
 
-        # Pre-process on device: upload uint8, normalize on the GPU.
-        # We deliberately do NOT eval here — the predictor's post-processor
-        # forces a single eval at the boundary together with score/box decode.
+        # Pre-process on device: upload uint8, normalize on Metal.
         x_uint8 = lb_img[None, ...]  # (1, H, W, 3) uint8
         x = mx.array(x_uint8).astype(mx.float32) / 255.0
 
-        pred = self.model(x)[0]  # (A, 4 + nc + nk) — still lazy
+        pred = self.model(x)[0]  # (A, 4 + nc + nk) — lazy until the post-processor evals
 
         kwargs: dict[str, Any] = dict(
             nc=self.nc,

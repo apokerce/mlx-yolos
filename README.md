@@ -122,22 +122,30 @@ print(results[0].verbose())
 To draw boxes + class badges + skeleton:
 
 ```python
-results[0].plot().save("annotated.jpg")
+results[0].save("annotated.jpg")
 ```
 
-`Results.plot()` automatically picks the right drawing path: boxes + class badges always, plus the COCO skeleton when keypoints are available. If you need the lower-level helpers directly:
+`Results.save()` annotates via `Results.plot()` and writes through `cv2.imwrite` (handles the RGB → BGR conversion internally). If you want the raw annotated array instead — for further processing, IPython display, etc. — `Results.plot()` returns an RGB `np.ndarray`:
+
+```python
+import cv2
+
+arr = results[0].plot()                                       # (H, W, 3) RGB uint8
+cv2.imwrite("annotated.jpg", cv2.cvtColor(arr, cv2.COLOR_RGB2BGR))
+```
+
+If you need the lower-level drawing helpers directly:
 
 ```python
 from mlxyolos.utils import draw_boxes, draw_pose
 
 r = results[0]
-img = draw_pose(
+annotated = draw_pose(
     r.orig_img,
     r.boxes.xyxy, r.boxes.conf, r.boxes.cls,
     r.keypoints.data,
     names={0: "person"},
-)
-img.save("annotated.jpg")
+)  # → RGB np.ndarray
 ```
 
 ---
@@ -146,15 +154,16 @@ img.save("annotated.jpg")
 
 Apple Silicon, `yolov8-pose`. Methodology and full per-scale reproduction steps in [`docs/VALIDATION.md`](docs/VALIDATION.md) and [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
 
-**Accuracy** — `yolov8n-pose` on COCO val2017 (5 000 images, imgsz=640, conf=0.001, iou=0.7). Ultralytics column from running `yolo pose val model=yolov8n-pose.pt data=coco-pose.yaml` on the same checkpoint.
+**Accuracy** — `yolov8n-pose` on COCO val2017 (imgsz=640, conf=0.001, iou=0.7, eval on the 2 346-image subset that has ≥1 keypoint-labeled person per Ultralytics' `val2017.txt`). Ultralytics column from `yolo pose val model=yolov8n-pose.pt data=coco-pose.yaml` on the same checkpoint.
 
 | Metric                  | mlx-yolos | Ultralytics | Δ        |
 |-------------------------|----------:|------------:|---------:|
-| pose AP @ IoU 0.50:0.95 | **49.9**  | 50.5        | **−0.6** |
-| pose AP @ IoU 0.50      | **78.7**  | 80.1        | **−1.4** |
-| box  AP @ IoU 0.50:0.95 | **45.5**  | 54.0        | **−8.5** |
+| pose AP @ IoU 0.50:0.95 | **50.1**  | 50.5        | **−0.4** |
+| pose AP @ IoU 0.50      | **79.6**  | 80.1        | **−0.5** |
+| box  AP @ IoU 0.50:0.95 | **52.6**  | 54.0        | **−1.4** |
+| box  AP @ large         | **79.0**  | 79.0        | **±0.0** |
 
-Pose AP matches Ultralytics within 0.6 pt — that's a faithful inference port. The box AP gap is bigger than noise and is **not** a forward-pass issue; it's because Ultralytics' `val` pipeline uses **rectangular letterbox** (`rect=True`, padding to stride-aligned non-square dims) while mlx-yolos always pads to a 640×640 square today. Per-image numerical parity is `max abs diff = 6.4e-4` against Ultralytics on `bus.jpg`.
+Pose AP is essentially matched everywhere (within 0.5 pt — at the cross-framework reproduction noise floor). Box AP closes to within 1.4 pt overall and is **exact on large objects**; the small residual is concentrated on small-object AP (mlx-yolos 18.8 vs Ultralytics 22.1), which is sub-pixel sensitivity to the ~6e-4 max-abs forward drift bouncing detections in/out of the strict-IoU thresholds. Full breakdown + reproduction recipe in [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 **Speed** — all five `yolov8{n,s,m,l,x}-pose` scales, 200 random COCO val images per cell, imgsz=640, conf=0.25, iou=0.45, warmup=40.
 
@@ -164,11 +173,11 @@ Mean latency, ms / image (lower is better; **bold** = fastest backend in column)
 
 | Backend     | yolov8n   | yolov8s   | yolov8m   | yolov8l   | yolov8x    |
 |-------------|----------:|----------:|----------:|----------:|-----------:|
-| **mlx**     | **16.52** | **27.93** | **53.63** | 84.43     | 134.52     |
-| torch-cpu   | 35.60     | 53.88     | 90.63     | 143.84    | 195.92     |
-| torch-mps   | 33.12     | 35.59     | 51.21     | **69.89** | **98.91**  |
+| **mlx**     | **14.25** | **22.16** | **43.68** | **68.09** | 133.39     |
+| torch-cpu   | 35.30     | 52.51     | 90.37     | 143.20    | 191.91     |
+| torch-mps   | 32.16     | 36.99     | 50.98     | 69.79     | **98.01**  |
 
-There's a **crossover at yolov8m / yolov8l**: mlx wins at the small-to-medium end (the entire pipeline stays on Metal with one eval boundary, no torchvision-NMS CPU fallback), torch-mps catches up once compute dominates over per-op launch overhead. Pick the backend by model size — see [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the full per-scale table and discussion.
+mlx wins outright through `yolov8l` (essentially tied with torch-mps there — 68.1 vs 69.8 ms, ~2 % margin). torch-mps only pulls ahead at the largest scale (`yolov8x`), where compute starts dominating over per-op launch overhead. torch-cpu is ~2.5× slower than the fastest backend at every scale. See [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the full per-scale table and discussion.
 
 ---
 

@@ -41,7 +41,7 @@ mlx-yolos/
 │       ├── ops_mlx.py        # MLX-native: xywh_to_xyxy / scale_* / NMS-with-on-device-IoU
 │       └── plotting.py       # draw_boxes / draw_pose
 ├── scripts/
-│   ├── validate_yolov8_pose.py    # per-image numerical parity check (no MLX needed)
+│   ├── download_convert_v8.sh     # fetch all 5 .pt weights + convert to MLX
 │   ├── get_coco_pose_val.sh       # download COCO val2017 + annotations
 │   ├── evaluate_coco_pose.py      # full COCO mAP via pycocotools + MLX timing
 │   └── benchmark_inference.py     # MLX vs torch-cpu vs torch-mps + bar chart
@@ -51,8 +51,8 @@ mlx-yolos/
 │   ├── BENCHMARK.md          # cross-backend timing
 │   └── benchmark.png         # rendered by scripts/benchmark_inference.py
 └── tests/
-    ├── test_converter.py     # name-mapping unit tests (no MLX)
-    └── test_ops_mlx.py       # numpy/MLX parity tests (auto-skip without MLX)
+    ├── test_converter.py     # name-mapping unit tests (CPU-only)
+    └── test_letterbox.py     # letterbox math (CPU-only; cv2 + numpy)
 ```
 
 ---

@@ -43,18 +43,40 @@ def scale_coords(
     shift = mx.array([px, py, px, py], dtype=mx.float32)
     out = (xyxy - shift) / float(ratio)
     lo = mx.array([0.0, 0.0, 0.0, 0.0], dtype=mx.float32)
-    hi = mx.array([w - 1, h - 1, w - 1, h - 1], dtype=mx.float32)
+    # Clip bounds match Ultralytics' clip_boxes: [0, w] / [0, h], NOT [0, w-1] / [0, h-1].
+    hi = mx.array([w, h, w, h], dtype=mx.float32)
     return mx.minimum(mx.maximum(out, lo), hi)
 
 
-def scale_keypoints(kpts: mx.array, ratio: float, pad: tuple[int, int]) -> mx.array:
-    """Undo letterbox for ``(N, K, dim)`` MLX keypoints (xy only)."""
+def scale_keypoints(
+    kpts: mx.array,
+    ratio: float,
+    pad: tuple[int, int],
+    orig_shape: tuple[int, int] | None = None,
+) -> mx.array:
+    """Undo letterbox for ``(N, K, dim)`` MLX keypoints (xy only).
+
+    When ``orig_shape`` is given, also clip xy to image bounds — matching
+    Ultralytics' ``clip_coords`` ([0, w] / [0, h]). Visibility/confidence
+    columns (index 2+) are left alone.
+    """
     px, py = float(pad[0]), float(pad[1])
     if kpts.shape[-1] >= 3:
         xy = (kpts[..., :2] - mx.array([px, py], dtype=mx.float32)) / float(ratio)
+        if orig_shape is not None:
+            h, w = orig_shape
+            lo = mx.array([0.0, 0.0], dtype=mx.float32)
+            hi = mx.array([w, h], dtype=mx.float32)
+            xy = mx.minimum(mx.maximum(xy, lo), hi)
         rest = kpts[..., 2:]
         return mx.concatenate([xy, rest], axis=-1)
-    return (kpts - mx.array([px, py], dtype=mx.float32)) / float(ratio)
+    out = (kpts - mx.array([px, py], dtype=mx.float32)) / float(ratio)
+    if orig_shape is not None:
+        h, w = orig_shape
+        lo = mx.array([0.0, 0.0], dtype=mx.float32)
+        hi = mx.array([w, h], dtype=mx.float32)
+        out = mx.minimum(mx.maximum(out, lo), hi)
+    return out
 
 
 def nms(

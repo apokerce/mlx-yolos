@@ -50,7 +50,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 # ---------------------------------------------------------------------------
 # Backend discovery
 # ---------------------------------------------------------------------------
@@ -90,8 +89,12 @@ def _build_mlx_backend(weights: str, cfg: str, scale: str):
 
     model = YOLO(cfg, scale=scale, weights=weights)
 
-    def predict(path: str, *, imgsz: int, conf: float, iou: float):
-        return model.predict(path, imgsz=imgsz, conf=conf, iou=iou)
+    def predict(
+        path: str, *, imgsz: int, conf: float, iou: float, rect: bool, scaleup: bool
+    ):
+        return model.predict(
+            path, imgsz=imgsz, conf=conf, iou=iou, rect=rect, scaleup=scaleup
+        )
 
     def n_objects(results) -> int:
         return 0 if results[0].boxes is None else len(results[0].boxes)
@@ -102,7 +105,14 @@ def _build_mlx_backend(weights: str, cfg: str, scale: str):
 def _build_torch_backend(weights: str, device: str):
     """Run yolov8-pose .pt through Ultralytics' own pipeline on the requested
     torch device. We sync after each call so the measured latency includes
-    the GPU/MPS work, not just enqueue time."""
+    the GPU/MPS work, not just enqueue time.
+
+    Ultralytics' predict() defaults to rectangular letterbox (the
+    ``auto=True`` mode of its internal ``LetterBox``), so passing the ``rect``
+    flag through to this backend isn't necessary — its default already matches
+    mlx-yolos's ``rect=True``. The keyword is accepted here so the benchmark
+    loop can call all backends with the same signature.
+    """
     import torch
     from ultralytics import YOLO as TorchYOLO
 
@@ -116,7 +126,13 @@ def _build_torch_backend(weights: str, device: str):
             torch.cuda.synchronize()
         # CPU is synchronous already.
 
-    def predict(path: str, *, imgsz: int, conf: float, iou: float):
+    def predict(
+        path: str, *, imgsz: int, conf: float, iou: float, rect: bool, scaleup: bool
+    ):
+        # ``rect`` and ``scaleup`` are accepted for signature symmetry with the
+        # mlx backend; ultralytics' predict already uses both as its default,
+        # so we don't forward them — passing scaleup=False here would require
+        # a different call path (val mode) that doesn't fit the predict loop.
         results = model.predict(
             source=path, imgsz=imgsz, conf=conf, iou=iou, device=device, verbose=False
         )
@@ -158,11 +174,20 @@ def _bench(
     imgsz: int,
     conf: float,
     iou: float,
+    rect: bool,
+    scaleup: bool,
     warmup: int,
 ) -> BenchResult:
     print(f"  warmup ({warmup} runs)...", flush=True)
     for i in range(warmup):
-        _ = predict_fn(str(paths[i % len(paths)]), imgsz=imgsz, conf=conf, iou=iou)
+        _ = predict_fn(
+            str(paths[i % len(paths)]),
+            imgsz=imgsz,
+            conf=conf,
+            iou=iou,
+            rect=rect,
+            scaleup=scaleup,
+        )
 
     times_ms: list[float] = []
     n_objs: list[int] = []
@@ -170,7 +195,9 @@ def _bench(
     t_total = time.perf_counter()
     for path in paths:
         t0 = time.perf_counter()
-        results = predict_fn(str(path), imgsz=imgsz, conf=conf, iou=iou)
+        results = predict_fn(
+            str(path), imgsz=imgsz, conf=conf, iou=iou, rect=rect, scaleup=scaleup
+        )
         times_ms.append((time.perf_counter() - t0) * 1000.0)
         n_objs.append(n_objects_fn(results))
     wall_s = time.perf_counter() - t_total
@@ -224,7 +251,7 @@ def _print_summary(results: list[BenchResult]) -> None:
 
     print()
     print("=" * (12 + 11 * len(scales)))
-    print(f"Summary — mean latency per backend × scale (ms / image)")
+    print("Summary — mean latency per backend × scale (ms / image)")
     print("=" * (12 + 11 * len(scales)))
     header = f"{'backend':<12}" + "".join(f"{('yolov8' + s):>11}" for s in scales)
     print(header)
@@ -405,6 +432,29 @@ def main() -> int:
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--conf", type=float, default=0.25)
     p.add_argument("--iou", type=float, default=0.45)
+    p.add_argument(
+        "--rect",
+        dest="rect",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Rectangular letterbox (pads to next stride-multiple per dim) — matches "
+            "Ultralytics' predict default. --no-rect forces the legacy 640x640 square "
+            "canvas on the mlx backend only; the torch backends always run their default "
+            "(rect=True), so --no-rect makes the comparison asymmetric."
+        ),
+    )
+    p.add_argument(
+        "--scaleup",
+        dest="scaleup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Allow upscaling images smaller than --imgsz. Default ON to match "
+            "`yolo predict`. --no-scaleup affects only the mlx backend; "
+            "ultralytics torch backends keep their predict default (scaleup=True)."
+        ),
+    )
     p.add_argument("--warmup", type=int, default=40)
     p.add_argument("--seed", type=int, default=0, help="image-sampling seed for reproducibility")
     p.add_argument(
@@ -462,6 +512,8 @@ def main() -> int:
                         imgsz=args.imgsz,
                         conf=args.conf,
                         iou=args.iou,
+                        rect=args.rect,
+                        scaleup=args.scaleup,
                         warmup=args.warmup,
                     )
                 )
@@ -485,6 +537,8 @@ def main() -> int:
                         imgsz=args.imgsz,
                         conf=args.conf,
                         iou=args.iou,
+                        rect=args.rect,
+                        scaleup=args.scaleup,
                         warmup=args.warmup,
                     )
                 )
@@ -508,6 +562,8 @@ def main() -> int:
                         imgsz=args.imgsz,
                         conf=args.conf,
                         iou=args.iou,
+                        rect=args.rect,
+                        scaleup=args.scaleup,
                         warmup=args.warmup,
                     )
                 )
