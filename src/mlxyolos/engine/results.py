@@ -172,13 +172,16 @@ class Results:
     # ------------------------------------------------------------------
 
     def plot(self, *, kpt_thr: float = 0.5):
-        """Return a PIL ``Image`` with boxes / labels / skeleton annotated.
+        """Return an annotated copy of ``orig_img`` as an ``np.ndarray`` (RGB).
 
         Always draws boxes if any are present. Adds the COCO skeleton when
         keypoints are available (pose task). Class label + confidence go in
         the corner of every box, on a filled background for legibility.
+
+        Persist with :meth:`save`, or directly via ``cv2``:
+
+            cv2.imwrite("out.jpg", cv2.cvtColor(r.plot(), cv2.COLOR_RGB2BGR))
         """
-        # Local import keeps Pillow optional for users who only need raw arrays.
         from mlxyolos.utils.plotting import draw_boxes, draw_pose
 
         if (
@@ -203,3 +206,15 @@ class Results:
             self.boxes.cls if self.boxes is not None else None,
             names=self.names,
         )
+
+    def save(self, path: str, *, kpt_thr: float = 0.5) -> str:
+        """Annotate via :meth:`plot` and write to ``path`` using cv2.
+
+        Returns the resolved path written to. cv2.imwrite picks the codec
+        from the extension (``.jpg``, ``.png``, …).
+        """
+        import cv2
+
+        img_rgb = self.plot(kpt_thr=kpt_thr)
+        cv2.imwrite(path, cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
+        return path

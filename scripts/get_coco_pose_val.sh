@@ -3,7 +3,9 @@
 #
 # Ported from ultralytics/data/scripts/get_coco.sh — narrowed to the
 # subset needed by mlx-yolos' pose evaluator: COCO val2017 images and
-# the official person_keypoints / instances annotations.
+# the official person_keypoints annotations (which carry both bbox and
+# keypoint labels for the ~2 346 person-keypointed val images;
+# Ultralytics' yolo pose val evaluates both metrics against this file).
 #
 # Usage:
 #   bash scripts/get_coco_pose_val.sh [target_dir]
@@ -11,7 +13,6 @@
 # Default target_dir is ./datasets/coco-pose. After download:
 #   <target_dir>/images/val2017/000000000139.jpg ...
 #   <target_dir>/annotations/person_keypoints_val2017.json
-#   <target_dir>/annotations/instances_val2017.json
 #
 # Skips work it has already done — safe to re-run.
 
@@ -48,7 +49,7 @@ fi
 
 # --- annotations ------------------------------------------------------------
 need_ann=0
-for f in person_keypoints_val2017.json instances_val2017.json; do
+for f in person_keypoints_val2017.json; do
   if [ ! -f "${TARGET}/annotations/${f}" ]; then
     need_ann=1
     break
@@ -62,14 +63,17 @@ if [ "${need_ann}" -eq 1 ]; then
   # The zip puts files in annotations/ at the archive root, so this lands
   # them at <target>/annotations/<json>.
   unzip -q -o annotations.zip -d "${TARGET}/"
-  # Trim the train annotations we don't need to keep the on-disk footprint small.
+  # Trim every annotation file we don't need to keep the on-disk footprint
+  # small. We only use person_keypoints_val2017.json — that's the GT for
+  # both bbox and keypoint mAP in the pose-val pipeline.
   rm -f "${TARGET}/annotations/person_keypoints_train2017.json"
   rm -f "${TARGET}/annotations/instances_train2017.json"
+  rm -f "${TARGET}/annotations/instances_val2017.json"
   rm -f "${TARGET}/annotations/captions_train2017.json"
   rm -f "${TARGET}/annotations/captions_val2017.json"
   rm annotations.zip
 else
-  echo "found ${TARGET}/annotations/{person_keypoints,instances}_val2017.json — skipping"
+  echo "found ${TARGET}/annotations/person_keypoints_val2017.json — skipping"
 fi
 
 echo

@@ -34,10 +34,17 @@ def _cmd_predict(args: argparse.Namespace) -> int:
     model = YOLO(args.cfg, scale=args.scale, weights=args.weights, verbose=args.verbose)
     print(f"loaded {model.task!r} head, nc={model.nc}, names={model.names}")
     print(
-        f"running on {args.source!r}: imgsz={args.imgsz}, "
-        f"conf={args.conf}, iou={args.iou}, kpt_thr={args.kpt_thr}"
+        f"running on {args.source!r}: imgsz={args.imgsz}, conf={args.conf}, "
+        f"iou={args.iou}, rect={args.rect}, scaleup={args.scaleup}, kpt_thr={args.kpt_thr}"
     )
-    results = model.predict(args.source, imgsz=args.imgsz, conf=args.conf, iou=args.iou)
+    results = model.predict(
+        args.source,
+        imgsz=args.imgsz,
+        conf=args.conf,
+        iou=args.iou,
+        rect=args.rect,
+        scaleup=args.scaleup,
+    )
 
     out_dir: Path | None = Path(args.save) if args.save else None
     if out_dir is not None:
@@ -50,7 +57,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         if out_dir is not None:
             stem = Path(r.path).stem if r.path else f"img{i}"
             out_path = out_dir / f"{stem}.jpg"
-            r.plot(kpt_thr=args.kpt_thr).save(out_path)
+            r.save(str(out_path), kpt_thr=args.kpt_thr)
             print(f"  → saved {out_path}")
     return 0
 
@@ -73,6 +80,28 @@ def main(argv: list[str] | None = None) -> int:
     pp.add_argument("--imgsz", type=int, default=640)
     pp.add_argument("--conf", type=float, default=0.25)
     pp.add_argument("--iou", type=float, default=0.45)
+    pp.add_argument(
+        "--rect",
+        dest="rect",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Rectangular letterbox (pads each dim to a multiple of stride=32). "
+            "Default ON to match Ultralytics' `yolo predict`. Pass --no-rect for "
+            "the legacy square padding behavior."
+        ),
+    )
+    pp.add_argument(
+        "--scaleup",
+        dest="scaleup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Allow upscaling images smaller than --imgsz. Default ON to match "
+            "Ultralytics' `yolo predict`. Pass --no-scaleup to keep small images "
+            "at native resolution (matches `yolo val`; helps small-object AP)."
+        ),
+    )
     pp.add_argument(
         "--kpt-thr",
         type=float,

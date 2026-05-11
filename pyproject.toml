@@ -25,9 +25,16 @@ classifiers = [
 dependencies = [
     "mlx>=0.20",
     "numpy>=1.24",
-    "pillow>=10.0",
     "pyyaml>=6.0",
     "safetensors>=0.4",
+    # cv2 is used for every image-side op: load, letterbox resize, drawing,
+    # and saving annotated outputs. We match Ultralytics' val/predict pipeline
+    # exactly (`cv2.INTER_LINEAR`, `cv2.copyMakeBorder`) since PIL.BILINEAR
+    # produces visibly different pixel grids (~80 % of pixels differ on a
+    # 1080×810 → 640×480 downscale of bus.jpg) and the model was trained on
+    # the cv2 grid. The `-headless` variant skips the GUI bindings; plain
+    # `opencv-python` works too if you already have it installed.
+    "opencv-python-headless>=4.7",
 ]
 
 [project.optional-dependencies]
